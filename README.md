@@ -1,5 +1,7 @@
 # チャットアプリ with Rust + Axum + WebSocket
 
+Rust + Axum + WebSocket で作るチャットアプリ
+
 ## 機能
 
 - **リアルタイムチャット**:
@@ -24,24 +26,24 @@
 
 ## サービス概要
 
-- `ws_chat_server`: WebSocket チャットサーバ。接続中のクライアント間でメッセージをブロードキャストします（送信者自身には送信されません）
-- `ws_chat_client`: インタラクティブなチャットクライアント。ユニークな `client_id` で接続し、再接続機能を持ちます
+- `bin/server`: WebSocket チャットサーバ。接続中のクライアント間でメッセージをブロードキャストします（送信者自身には送信されません）
+- `bin/client`: インタラクティブなチャットクライアント。ユニークな `client_id` で接続し、再接続機能を持ちます
 
 ## 実行
 
 ### サーバの起動
 
 ```sh
-cargo run --bin ws_chat_server
+cargo run --bin server
 ```
 
 ### クライアントの起動
 
 ```sh
-cargo run --bin ws_chat_client -- --client-id alice
+cargo run --bin client -- --client-id alice
 
 # 別ターミナルで起動
-cargo run --bin ws_chat_client -- --client-id bob
+cargo run --bin client -- --client-id bob
 ```
 
 ### 特徴
