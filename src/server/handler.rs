@@ -1,20 +1,17 @@
-//! WebSocket chat server implementation.
+//! WebSocket connection handlers.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
-    Router,
     extract::{
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
 };
 use futures_util::{sink::SinkExt, stream::StreamExt};
-use serde::Deserialize;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 
 use crate::{
     time::get_jst_timestamp,
@@ -24,55 +21,9 @@ use crate::{
     },
 };
 
-#[derive(Debug, Deserialize)]
-struct ConnectQuery {
-    client_id: String,
-}
+use super::state::{AppState, ClientInfo, ConnectQuery};
 
-/// Client connection information
-struct ClientInfo {
-    /// Message sender channel
-    sender: mpsc::UnboundedSender<String>,
-    /// Unix timestamp when connected (in JST, milliseconds)
-    connected_at: i64,
-}
-
-/// Shared application state
-struct AppState {
-    /// Map of client_id to their connection info
-    connected_clients: Mutex<HashMap<String, ClientInfo>>,
-}
-
-/// Signal handler for graceful shutdown
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("Failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {
-            tracing::info!("Received Ctrl+C, initiating graceful shutdown...");
-        },
-        _ = terminate => {
-            tracing::info!("Received SIGTERM, initiating graceful shutdown...");
-        },
-    }
-}
-
-async fn websocket_handler(
+pub async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     Query(query): Query<ConnectQuery>,
@@ -108,7 +59,7 @@ async fn websocket_handler(
     Ok(ws.on_upgrade(|socket| handle_socket(socket, state, client_id, rx)))
 }
 
-async fn handle_socket(
+pub async fn handle_socket(
     socket: WebSocket,
     state: Arc<AppState>,
     client_id: String,
@@ -280,33 +231,4 @@ async fn handle_socket(
         }
         tracing::info!("Broadcasted participant-left for '{}'", client_id);
     }
-}
-
-/// Run the WebSocket chat server
-pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
-    // Create shared state for client management
-    let connected_clients = Mutex::new(HashMap::new());
-    let app_state = Arc::new(AppState { connected_clients });
-
-    let app = Router::new()
-        .route("/ws", get(websocket_handler))
-        .with_state(app_state);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
-
-    tracing::info!(
-        "WebSocket chat server listening on {}",
-        listener.local_addr()?
-    );
-    tracing::info!("Connect to: ws://127.0.0.1:8080/ws");
-    tracing::info!("Press Ctrl+C to shutdown gracefully");
-
-    // Set up graceful shutdown signal handler
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
-    tracing::info!("Server shutdown complete");
-
-    Ok(())
 }

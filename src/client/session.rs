@@ -1,8 +1,5 @@
-//! WebSocket chat client implementation.
+//! WebSocket client session management.
 
-use std::{io::Write, time::Duration};
-
-use chrono::{FixedOffset, TimeZone};
 use futures_util::{SinkExt, StreamExt};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -11,33 +8,20 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::{
     error::ClientError,
-    time::get_jst_timestamp,
+    time::{get_jst_timestamp, timestamp_to_jst_rfc3339},
     types::{
         ChatMessage, MessageType, ParticipantJoinedMessage, ParticipantLeftMessage,
         RoomConnectedMessage,
     },
 };
 
-const MAX_RECONNECT_ATTEMPTS: u32 = 5;
-const RECONNECT_INTERVAL_SECS: u64 = 5;
-
-/// Convert Unix timestamp (milliseconds) to JST RFC 3339 format
-fn timestamp_to_jst_rfc3339(timestamp_millis: i64) -> String {
-    let jst_offset = FixedOffset::east_opt(9 * 3600).unwrap(); // JST is UTC+9
-    let seconds = timestamp_millis / 1000;
-    let nanos = ((timestamp_millis % 1000) * 1_000_000) as u32;
-    let dt = jst_offset.timestamp_opt(seconds, nanos).unwrap();
-    dt.to_rfc3339()
-}
-
-/// Redisplay the prompt after receiving a message
-fn redisplay_prompt(client_id: &str) {
-    print!("{}> ", client_id);
-    std::io::stdout().flush().ok();
-}
+use super::ui::redisplay_prompt;
 
 /// Run the WebSocket client session
-async fn run_client_session(url: &str, client_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_client_session(
+    url: &str,
+    client_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Construct URL with client_id as query parameter
     let url = format!("{}?client_id={}", url, client_id);
 
@@ -262,64 +246,6 @@ async fn run_client_session(url: &str, client_id: &str) -> Result<(), Box<dyn st
                 return Err(Box::new(ClientError::ConnectionError(
                     "Connection lost".to_string(),
                 )));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Run the WebSocket client with reconnection logic
-pub async fn run_client(url: String, client_id: String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reconnect_count = 0;
-
-    loop {
-        tracing::info!(
-            "Attempting to connect to {} as '{}' (attempt {}/{})",
-            url,
-            client_id,
-            reconnect_count + 1,
-            MAX_RECONNECT_ATTEMPTS
-        );
-
-        match run_client_session(&url, &client_id).await {
-            Ok(_) => {
-                tracing::info!("Client session ended normally");
-                // If connection ended normally (user exit), don't reconnect
-                break;
-            }
-            Err(e) => {
-                // Check if it's a duplicate client_id error
-                if let Some(client_err) = e.downcast_ref::<ClientError>()
-                    && matches!(client_err, ClientError::DuplicateClientId(_))
-                {
-                    tracing::error!("{}", e);
-                    tracing::error!(
-                        "Cannot connect with client_id '{}' as it is already in use. Exiting.",
-                        client_id
-                    );
-                    std::process::exit(1);
-                }
-
-                tracing::warn!("Connection lost: {}", e);
-                reconnect_count += 1;
-
-                if reconnect_count >= MAX_RECONNECT_ATTEMPTS {
-                    tracing::error!(
-                        "Failed to reconnect after {} attempts. Exiting.",
-                        MAX_RECONNECT_ATTEMPTS
-                    );
-                    std::process::exit(1);
-                }
-
-                tracing::info!(
-                    "Reconnecting in {} seconds... (attempt {}/{})",
-                    RECONNECT_INTERVAL_SECS,
-                    reconnect_count + 1,
-                    MAX_RECONNECT_ATTEMPTS
-                );
-
-                tokio::time::sleep(Duration::from_secs(RECONNECT_INTERVAL_SECS)).await;
             }
         }
     }
