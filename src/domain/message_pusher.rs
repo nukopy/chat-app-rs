@@ -39,25 +39,25 @@ pub trait MessagePusher: Send + Sync {
     ///
     /// # 引数
     ///
-    /// - `client_id`: クライアント ID
+    /// - `client_id`: クライアント ID（Domain Model）
     /// - `sender`: メッセージ送信用の channel sender
     ///
     /// # 注意
     ///
     /// 実装によっては、この操作は no-op（何もしない）になる場合があります。
     /// 例えば、Redis Pub/Sub を使う場合、接続管理は Redis 側で行われます。
-    async fn register_client(&self, client_id: String, sender: PusherChannel);
+    async fn register_client(&self, client_id: ClientId, sender: PusherChannel);
 
     /// クライアントの登録を解除
     ///
     /// # 引数
     ///
-    /// - `client_id`: クライアント ID
+    /// - `client_id`: クライアント ID（Domain Model）
     ///
     /// # 注意
     ///
     /// 実装によっては、この操作は no-op（何もしない）になる場合があります。
-    async fn unregister_client(&self, client_id: &str);
+    async fn unregister_client(&self, client_id: &ClientId);
 
     /// 特定のクライアントにメッセージを送信
     ///

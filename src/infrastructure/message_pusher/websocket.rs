@@ -62,16 +62,22 @@ impl WebSocketMessagePusher {
 
 #[async_trait]
 impl MessagePusher for WebSocketMessagePusher {
-    async fn register_client(&self, client_id: String, sender: PusherChannel) {
+    async fn register_client(&self, client_id: ClientId, sender: PusherChannel) {
         let mut clients = self.clients.lock().await;
-        clients.insert(client_id.clone(), sender);
-        tracing::debug!("Client '{}' registered to MessagePusher", client_id);
+        clients.insert(client_id.as_str().to_string(), sender);
+        tracing::debug!(
+            "Client '{}' registered to MessagePusher",
+            client_id.as_str()
+        );
     }
 
-    async fn unregister_client(&self, client_id: &str) {
+    async fn unregister_client(&self, client_id: &ClientId) {
         let mut clients = self.clients.lock().await;
-        clients.remove(client_id);
-        tracing::debug!("Client '{}' unregistered from MessagePusher", client_id);
+        clients.remove(client_id.as_str());
+        tracing::debug!(
+            "Client '{}' unregistered from MessagePusher",
+            client_id.as_str()
+        );
     }
 
     async fn push_to(&self, client_id: &ClientId, content: &str) -> Result<(), MessagePushError> {
