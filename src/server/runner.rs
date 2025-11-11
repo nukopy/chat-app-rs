@@ -35,7 +35,9 @@ pub async fn run_server(host: String, port: u16) -> Result<(), Box<dyn std::erro
     });
 
     let app = Router::new()
+        // WebSocket エンドポイント
         .route("/ws", get(websocket_handler))
+        // HTTP エンドポイント
         .route("/debug/room", get(debug_room_state))
         .route("/api/health", get(health_check))
         .route("/api/rooms", get(get_rooms))
