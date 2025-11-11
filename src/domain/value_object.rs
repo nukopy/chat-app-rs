@@ -55,6 +55,14 @@ impl fmt::Display for ClientId {
     }
 }
 
+impl TryFrom<String> for ClientId {
+    type Error = ValueObjectError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
 /// Room identifier value object.
 ///
 /// Represents a unique identifier for a chat room.
@@ -167,6 +175,14 @@ impl fmt::Display for MessageContent {
     }
 }
 
+impl TryFrom<String> for MessageContent {
+    type Error = ValueObjectError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
 /// Timestamp value object.
 ///
 /// Represents a Unix timestamp in milliseconds (JST).
@@ -196,6 +212,12 @@ impl Timestamp {
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl From<i64> for Timestamp {
+    fn from(value: i64) -> Self {
+        Self::new(value)
     }
 }
 

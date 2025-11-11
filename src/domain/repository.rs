@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{ClientId, MessageContent, Participant, RepositoryError, Room, Timestamp};
-use crate::ui::state::ClientInfo;
 
 /// Room Repository trait
 ///
@@ -25,21 +24,24 @@ pub trait RoomRepository: Send + Sync {
     async fn get_room(&self) -> Result<Room, RepositoryError>;
 
     /// 参加者を追加（connected_clients と room の両方を更新）
+    ///
+    /// ## 技術的負債
+    ///
+    /// `UnboundedSender<String>` はインフラ層の実装詳細（InMemory 実装用）です。
+    /// 本来、ドメイン層の Repository trait にインフラ実装詳細を含めるべきではありません。
+    /// 将来的には、メッセージ送信の仕組みをドメイン層から分離する必要があります。
     async fn add_participant(
         &self,
-        client_id: String,
+        client_id: ClientId,
         sender: UnboundedSender<String>,
-        timestamp: i64,
+        timestamp: Timestamp,
     ) -> Result<(), RepositoryError>;
 
     /// 参加者を削除（connected_clients と room の両方から削除）
-    async fn remove_participant(&self, client_id: &str) -> Result<(), RepositoryError>;
-
-    /// クライアント情報を取得
-    async fn get_client_info(&self, client_id: &str) -> Result<ClientInfo, RepositoryError>;
+    async fn remove_participant(&self, client_id: &ClientId) -> Result<(), RepositoryError>;
 
     /// 接続中の全てのクライアント ID を取得
-    async fn get_all_connected_client_ids(&self) -> Vec<String>;
+    async fn get_all_connected_client_ids(&self) -> Vec<ClientId>;
 
     /// メッセージを Room に追加
     async fn add_message(

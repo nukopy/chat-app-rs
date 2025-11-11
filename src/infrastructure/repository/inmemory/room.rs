@@ -61,64 +61,55 @@ impl RoomRepository for InMemoryRoomRepository {
 
     async fn add_participant(
         &self,
-        client_id: String,
+        client_id: ClientId,
         sender: UnboundedSender<String>,
-        timestamp: i64,
+        timestamp: Timestamp,
     ) -> Result<(), RepositoryError> {
         // First, try to add to room (domain model will handle validation)
-        let participant_client_id = ClientId::new(client_id.clone())
-            .map_err(|_| RepositoryError::ParticipantNotFound(client_id.clone()))?;
-        let participant = Participant::new(participant_client_id, Timestamp::new(timestamp));
+        let participant = Participant::new(client_id.clone(), timestamp);
 
         {
             let mut room = self.room.lock().await;
-            room.add_participant(participant)
-                .map_err(|_| RepositoryError::ParticipantNotFound(client_id.clone()))?;
+            room.add_participant(participant).map_err(|_| {
+                RepositoryError::ParticipantNotFound(client_id.as_str().to_string())
+            })?;
         }
 
         // Only if room addition succeeds, add to connected_clients
         let mut clients = self.connected_clients.lock().await;
         clients.insert(
-            client_id,
+            client_id.as_str().to_string(),
             ClientInfo {
                 sender,
-                connected_at: timestamp,
+                connected_at: timestamp.value(),
             },
         );
 
         Ok(())
     }
 
-    async fn remove_participant(&self, client_id: &str) -> Result<(), RepositoryError> {
+    async fn remove_participant(&self, client_id: &ClientId) -> Result<(), RepositoryError> {
+        let client_id_str = client_id.as_str();
+
         // Remove from connected_clients
         let mut clients = self.connected_clients.lock().await;
         clients
-            .remove(client_id)
-            .ok_or_else(|| RepositoryError::ClientInfoNotFound(client_id.to_string()))?;
+            .remove(client_id_str)
+            .ok_or_else(|| RepositoryError::ClientInfoNotFound(client_id_str.to_string()))?;
 
         // Remove from room
         let mut room = self.room.lock().await;
-        let participant_client_id = ClientId::new(client_id.to_string())
-            .map_err(|_| RepositoryError::ParticipantNotFound(client_id.to_string()))?;
-        room.remove_participant(&participant_client_id);
+        room.remove_participant(client_id);
 
         Ok(())
     }
 
-    async fn get_client_info(&self, client_id: &str) -> Result<ClientInfo, RepositoryError> {
+    async fn get_all_connected_client_ids(&self) -> Vec<ClientId> {
         let clients = self.connected_clients.lock().await;
         clients
-            .get(client_id)
-            .map(|info| ClientInfo {
-                sender: info.sender.clone(),
-                connected_at: info.connected_at,
-            })
-            .ok_or_else(|| RepositoryError::ClientInfoNotFound(client_id.to_string()))
-    }
-
-    async fn get_all_connected_client_ids(&self) -> Vec<String> {
-        let clients = self.connected_clients.lock().await;
-        clients.keys().cloned().collect()
+            .keys()
+            .filter_map(|k| ClientId::new(k.clone()).ok())
+            .collect()
     }
 
     async fn add_message(
@@ -190,21 +181,19 @@ mod tests {
         let timestamp = get_jst_timestamp();
 
         // when (操作):
+        let client_id = ClientId::new("alice".to_string()).unwrap();
         let result = repo
-            .add_participant("alice".to_string(), sender, timestamp)
+            .add_participant(client_id, sender, Timestamp::new(timestamp))
             .await;
 
         // then (期待する結果):
         assert!(result.is_ok());
         assert_eq!(repo.count_connected_clients().await, 1);
 
-        let client_info = repo.get_client_info("alice").await;
-        assert!(client_info.is_ok());
-        assert_eq!(client_info.unwrap().connected_at, timestamp);
-
         let participants = repo.get_participants().await;
         assert_eq!(participants.len(), 1);
         assert_eq!(participants[0].id.as_str(), "alice");
+        assert_eq!(participants[0].connected_at.value(), timestamp);
     }
 
     #[tokio::test]
@@ -214,19 +203,17 @@ mod tests {
         let repo = create_test_repository();
         let (sender, _receiver) = mpsc::unbounded_channel();
         let timestamp = get_jst_timestamp();
-        repo.add_participant("alice".to_string(), sender, timestamp)
+        let client_id = ClientId::new("alice".to_string()).unwrap();
+        repo.add_participant(client_id.clone(), sender, Timestamp::new(timestamp))
             .await
             .unwrap();
 
         // when (操作):
-        let result = repo.remove_participant("alice").await;
+        let result = repo.remove_participant(&client_id).await;
 
         // then (期待する結果):
         assert!(result.is_ok());
         assert_eq!(repo.count_connected_clients().await, 0);
-
-        let client_info = repo.get_client_info("alice").await;
-        assert!(client_info.is_err());
 
         let participants = repo.get_participants().await;
         assert_eq!(participants.len(), 0);
@@ -239,7 +226,8 @@ mod tests {
         let repo = create_test_repository();
 
         // when (操作):
-        let result = repo.remove_participant("nonexistent").await;
+        let nonexistent = ClientId::new("nonexistent".to_string()).unwrap();
+        let result = repo.remove_participant(&nonexistent).await;
 
         // then (期待する結果):
         assert!(result.is_err());
@@ -247,26 +235,6 @@ mod tests {
             result.unwrap_err(),
             RepositoryError::ClientInfoNotFound(_)
         ));
-    }
-
-    #[tokio::test]
-    async fn test_get_client_info_success() {
-        // テスト項目: 存在するクライアントの情報を取得できる
-        // given (前提条件):
-        let repo = create_test_repository();
-        let (sender, _receiver) = mpsc::unbounded_channel();
-        let timestamp = get_jst_timestamp();
-        repo.add_participant("alice".to_string(), sender, timestamp)
-            .await
-            .unwrap();
-
-        // when (操作):
-        let result = repo.get_client_info("alice").await;
-
-        // then (期待する結果):
-        assert!(result.is_ok());
-        let client_info = result.unwrap();
-        assert_eq!(client_info.connected_at, timestamp);
     }
 
     #[tokio::test]
@@ -279,10 +247,12 @@ mod tests {
         let timestamp = get_jst_timestamp();
 
         // when (操作):
-        repo.add_participant("alice".to_string(), sender1, timestamp)
+        let alice = ClientId::new("alice".to_string()).unwrap();
+        let bob = ClientId::new("bob".to_string()).unwrap();
+        repo.add_participant(alice, sender1, Timestamp::new(timestamp))
             .await
             .unwrap();
-        repo.add_participant("bob".to_string(), sender2, timestamp)
+        repo.add_participant(bob, sender2, Timestamp::new(timestamp))
             .await
             .unwrap();
 
@@ -300,18 +270,20 @@ mod tests {
         let timestamp = get_jst_timestamp();
 
         // when (操作):
-        repo.add_participant("alice".to_string(), sender1, timestamp)
+        let alice = ClientId::new("alice".to_string()).unwrap();
+        let bob = ClientId::new("bob".to_string()).unwrap();
+        repo.add_participant(alice.clone(), sender1, Timestamp::new(timestamp))
             .await
             .unwrap();
-        repo.add_participant("bob".to_string(), sender2, timestamp)
+        repo.add_participant(bob.clone(), sender2, Timestamp::new(timestamp))
             .await
             .unwrap();
         let client_ids = repo.get_all_connected_client_ids().await;
 
         // then (期待する結果):
         assert_eq!(client_ids.len(), 2);
-        assert!(client_ids.contains(&"alice".to_string()));
-        assert!(client_ids.contains(&"bob".to_string()));
+        assert!(client_ids.contains(&alice));
+        assert!(client_ids.contains(&bob));
     }
 
     #[tokio::test]
@@ -321,11 +293,11 @@ mod tests {
         let repo = create_test_repository();
         let (sender, _receiver) = mpsc::unbounded_channel();
         let timestamp = get_jst_timestamp();
-        repo.add_participant("alice".to_string(), sender, timestamp)
+        let client_id = ClientId::new("alice".to_string()).unwrap();
+        repo.add_participant(client_id.clone(), sender, Timestamp::new(timestamp))
             .await
             .unwrap();
 
-        let client_id = ClientId::new("alice".to_string()).unwrap();
         let content = MessageContent::new("Hello".to_string()).unwrap();
         let msg_timestamp = Timestamp::new(timestamp);
 
