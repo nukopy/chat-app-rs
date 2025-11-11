@@ -69,6 +69,8 @@ $ tree -L 2 .
 
 ## コーディングスタイルと命名
 
+### Rust
+
 - Rust 2024 edition / 4 スペースインデント / `snake_case` 関数・変数、`PascalCase` 型、`SCREAMING_SNAKE_CASE` 定数。
 - 共有モジュールは `mod transport;` のように `src/` 直下へ切り出し、サーバ・クライアントから再利用します。
 - ログは `tracing::info!` 系を使い、イベント名（`participant_joined` など）をフィールドとして付与します。
@@ -78,7 +80,20 @@ $ tree -L 2 .
   - ❌ 悪い例: `use fixtures::*;`
   - **例外**: ユニットテスト内での `use super::*;` のみ許可される。
 
-**モジュール命名規約の詳細は `docs/documentations/software-architecture.md` を参照してください。**
+**モジュール命名規約の詳細は [software-architecture.md](./docs/documentations/software-architecture.md) を参照してください。**
+
+### Markdown
+
+- **コードブロック記法**: ドキュメント内でテキストのみのコードブロックを記述する場合は、言語指定に `txt` を使用する。
+  - ✅ 良い例: ````txt ...````
+  - ❌ 悪い例: ```` ... ````（言語指定なし）
+  - 対象: ディレクトリツリー、依存関係図、フロー図など、特定の言語ではないテキスト
+- **ドキュメント参照記法**: ドキュメント内で他のファイルを参照する場合は、Markdown リンク形式で相対パスを使用する。
+  - ✅ 良い例: `[アーキテクチャ設計](./docs/documentations/software-architecture.md)`
+  - ✅ 良い例: `[タスク](./docs/tasks/20251112-032514_introduce-message-pusher.md)`
+  - ❌ 悪い例: `` `docs/documentations/software-architecture.md` ``（バッククォートのみ）
+  - ❌ 悪い例: `docs/documentations/software-architecture.md`（リンクなし）
+  - 理由: リンク形式にすることで、エディタやビューアーでクリック可能になり、ドキュメント間の移動が容易になる
 
 ## テスト指針
 
