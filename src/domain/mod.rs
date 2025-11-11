@@ -10,7 +10,7 @@ pub mod repository;
 pub mod value_object;
 
 pub use entity::{ChatMessage, Participant, Room};
-pub use error::{RoomError, ValueObjectError};
+pub use error::{RepositoryError, RoomError, ValueObjectError};
 pub use factory::RoomIdFactory;
-pub use repository::{RepositoryError, RoomRepository};
+pub use repository::RoomRepository;
 pub use value_object::{ClientId, MessageContent, RoomId, Timestamp};

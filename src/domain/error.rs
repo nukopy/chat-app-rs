@@ -2,6 +2,10 @@
 
 use thiserror::Error;
 
+// ------------------------------------------------------------------------------------------------
+// Value Objects validation errors
+// ------------------------------------------------------------------------------------------------
+
 /// Errors related to Value Objects validation
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ValueObjectError {
@@ -30,6 +34,10 @@ pub enum ValueObjectError {
     MessageContentTooLong { max: usize, actual: usize },
 }
 
+// ------------------------------------------------------------------------------------------------
+// Entity errors
+// ------------------------------------------------------------------------------------------------
+
 /// Errors related to Room domain logic
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum RoomError {
@@ -40,4 +48,24 @@ pub enum RoomError {
     /// Message capacity exceeded error
     #[error("Message capacity exceeded: maximum {capacity} messages allowed (current: {current})")]
     MessageCapacityExceeded { capacity: usize, current: usize },
+}
+
+// ------------------------------------------------------------------------------------------------
+// Repository errors
+// ------------------------------------------------------------------------------------------------
+
+/// Errors related to Repository operations
+#[derive(Debug, Error)]
+pub enum RepositoryError {
+    /// Participant not found error
+    #[error("Participant not found: {0}")]
+    ParticipantNotFound(String),
+
+    /// Client info not found error
+    #[error("Client info not found: {0}")]
+    ClientInfoNotFound(String),
+
+    /// Room not found error
+    #[error("Room not found")]
+    RoomNotFound,
 }

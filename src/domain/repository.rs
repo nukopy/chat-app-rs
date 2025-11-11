@@ -6,21 +6,8 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{ClientId, MessageContent, Participant, Room, Timestamp};
+use super::{ClientId, MessageContent, Participant, RepositoryError, Room, Timestamp};
 use crate::ui::state::ClientInfo;
-
-/// Repository のエラー型
-#[derive(Debug, thiserror::Error)]
-pub enum RepositoryError {
-    #[error("Participant not found: {0}")]
-    ParticipantNotFound(String),
-
-    #[error("Client info not found: {0}")]
-    ClientInfoNotFound(String),
-
-    #[error("Room not found")]
-    RoomNotFound,
-}
 
 /// Room Repository trait
 ///
