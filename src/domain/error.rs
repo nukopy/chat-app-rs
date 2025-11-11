@@ -69,3 +69,19 @@ pub enum RepositoryError {
     #[error("Room not found")]
     RoomNotFound,
 }
+
+// ------------------------------------------------------------------------------------------------
+// MessagePusher errors
+// ------------------------------------------------------------------------------------------------
+
+/// Errors related to MessagePusher operations
+#[derive(Debug, Error)]
+pub enum MessagePushError {
+    /// Client not found error
+    #[error("Client not found: {0}")]
+    ClientNotFound(String),
+
+    /// Push failed error
+    #[error("Push failed: {0}")]
+    PushFailed(String),
+}
