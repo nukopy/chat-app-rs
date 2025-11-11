@@ -5,7 +5,8 @@
       "Bash(cargo build:*)",
       "Bash(cargo fmt:*)",
       "Bash(mkdir:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []
