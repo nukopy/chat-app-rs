@@ -57,7 +57,11 @@ async fn test_rooms_list_endpoint() {
     let room_id = room["id"].as_str().expect("room id should be a string");
 
     // UUID v4 形式であることを確認（36文字、ハイフン含む）
-    assert_eq!(room_id.len(), 36, "Room ID should be UUID format (36 chars)");
+    assert_eq!(
+        room_id.len(),
+        36,
+        "Room ID should be UUID format (36 chars)"
+    );
     assert!(
         uuid::Uuid::parse_str(room_id).is_ok(),
         "Room ID should be valid UUID"
