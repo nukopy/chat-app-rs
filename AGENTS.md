@@ -12,9 +12,11 @@
 
 - `cargo fmt` : Rustfmt で全ファイルを整形し、PR 直前に必ず実行します。
 - `cargo clippy --all-targets --all-features` : Axum マクロや Tokio の非同期コードを含め lint します。
+- `cargo test` : 追加した単体・統合テストを一括実行し、フェイル時は `-- --nocapture` で詳細を追跡します。
 - `cargo run --bin server` : WebSocket サーバを起動し、`RUST_LOG=info` で通信ログを確認できます。
 - `cargo run --bin client -- --client-id alice` : 任意の `client_id` でクライアントを起動（例：別ターミナルで bob）。
-- `cargo test` : 追加した単体・統合テストを一括実行し、フェイル時は `-- --nocapture` で詳細を追跡します。
+
+実装タスクを行ったとき、必ず `cargo fmt`、`cargo clippy --all-targets --all-features`、`cargo test` を実行してください。これらが通るまでタスクを終了しないでください。
 
 ## コーディングスタイルと命名
 
@@ -25,10 +27,32 @@
 
 ## テスト指針
 
-- 非同期テストは `#[tokio::test(flavor = "multi_thread")]` を使い、`room-connected` や重複 `client_id` 拒否を再現するケースを用意してください。
-- テストモジュールは対象ファイル内に `#[cfg(test)] mod tests { ... }` を置くか、将来的に `tests/` ディレクトリを追加して統合テスト化します。
-- 再接続ロジックやタイムスタンプ整形など副作用の大きい箇所はモックチャネル・固定クロックで検証します。
-- テスト実装は twada の TDD ワークフロー（https://t-wada.hatenablog.jp/entry/canon-tdd-by-kent-beck）に従い、Red → Green → Refactor のサイクルで進めます。
+### テスト階層
+
+プロジェクトは3層のテスト戦略を採用しています：
+
+1. **単体テスト（Unit Tests）**: ドメインロジックの純粋関数をテスト
+   - `src/server/domain.rs`: 参加者リスト生成、重複検出、ブロードキャスト対象選定
+   - `src/client/domain.rs`: 再接続判定、即座終了判定
+   - `src/client/formatter.rs`: メッセージフォーマット関数
+   - `src/time.rs`: Clock 抽象化（SystemClock, FixedClock）
+
+2. **統合テスト（Integration Tests）**: プロセスベースで実際のサーバー・クライアント間通信をテスト
+   - `tests/integration_test.rs`: サーバー起動、クライアント接続、メッセージブロードキャスト、参加者通知
+   - `TestServer` と `TestClient` ヘルパーを使用して実プロセスを起動
+   - 各テストは異なるポートを使用して並行実行を回避
+
+3. **手動 E2E テスト**: 実際のユーザーシナリオを手動で検証
+   - 複数クライアントでのリアルタイムチャット
+   - UI/UX の確認（プロンプト表示、カーソル制御など）
+
+### テスト実装ガイドライン
+
+- 非同期テストは `#[tokio::test(flavor = "multi_thread")]` を使用（統合テストでは不要）
+- ドメインロジックは可能な限り純粋関数として抽出し、I/O から分離
+- 副作用のある処理（時刻取得など）は trait で抽象化し、テスト時は FixedClock などを使用
+- 統合テストでは `std::process::Command` を使って実際の cargo プロセスを起動
+- テスト実装は twada の TDD ワークフロー（https://t-wada.hatenablog.jp/entry/canon-tdd-by-kent-beck）に従い、Red → Green → Refactor のサイクルで進める
 
 ### テストフォーマット
 
