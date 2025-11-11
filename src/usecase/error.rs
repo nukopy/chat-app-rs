@@ -14,4 +14,6 @@ pub enum ConnectError {
 pub enum SendMessageError {
     /// メッセージ容量超過
     MessageCapacityExceeded,
+    /// ブロードキャスト失敗
+    BroadcastFailed(String),
 }

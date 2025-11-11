@@ -18,7 +18,9 @@
 
 use std::sync::Arc;
 
-use crate::domain::{ClientId, RoomRepository, Timestamp};
+use crate::domain::{
+    ClientId, MessagePusher, Participant, PusherChannel, RoomRepository, Timestamp,
+};
 
 use super::error::ConnectError;
 
@@ -26,12 +28,20 @@ use super::error::ConnectError;
 pub struct ConnectParticipantUseCase {
     /// Repository（データアクセス層の抽象化）
     repository: Arc<dyn RoomRepository>,
+    /// MessagePusher（メッセージ通知の抽象化）
+    message_pusher: Arc<dyn MessagePusher>,
 }
 
 impl ConnectParticipantUseCase {
     /// 新しい ConnectParticipantUseCase を作成
-    pub fn new(repository: Arc<dyn RoomRepository>) -> Self {
-        Self { repository }
+    pub fn new(
+        repository: Arc<dyn RoomRepository>,
+        message_pusher: Arc<dyn MessagePusher>,
+    ) -> Self {
+        Self {
+            repository,
+            message_pusher,
+        }
     }
 
     /// 参加者接続を実行
@@ -39,17 +49,17 @@ impl ConnectParticipantUseCase {
     /// # Arguments
     ///
     /// * `client_id` - 接続するクライアントの ID（Domain Model）
-    /// * `sender` - メッセージ送信チャンネル
+    /// * `sender` - クライアントへのメッセージ送信用チャンネル
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - 接続成功
+    /// * `Ok(Timestamp)` - 接続成功（接続時刻の Domain Model を返す）
     /// * `Err(ConnectError)` - 接続失敗
     pub async fn execute(
         &self,
         client_id: ClientId,
-        sender: tokio::sync::mpsc::UnboundedSender<String>,
-    ) -> Result<(), ConnectError> {
+        sender: PusherChannel,
+    ) -> Result<Timestamp, ConnectError> {
         use crate::common::time::get_jst_timestamp;
 
         // 1. 重複チェック
@@ -63,38 +73,61 @@ impl ConnectParticipantUseCase {
             ));
         }
 
-        // 2. Repository に参加者を追加（connected_clients と room の両方を更新）
+        // 2. Repository に参加者を追加
         let connected_at = Timestamp::new(get_jst_timestamp());
         self.repository
-            .add_participant(client_id, sender, connected_at)
+            .add_participant(client_id.clone(), connected_at)
             .await
             .map_err(|_| ConnectError::RoomCapacityExceeded)?;
 
-        Ok(())
+        // 3. MessagePusher にクライアントを登録（Domain Model を渡す）
+        self.message_pusher.register_client(client_id, sender).await;
+
+        Ok(connected_at)
     }
 
     /// 参加者リストを構築
     ///
     /// # Returns
     ///
-    /// 接続中のクライアント ID のリスト（ソート済み）
-    pub async fn build_participant_list(
-        &self,
-    ) -> Vec<crate::infrastructure::dto::websocket::ParticipantInfo> {
-        let participants = self.repository.get_participants().await;
-        let mut participant_info_list: Vec<crate::infrastructure::dto::websocket::ParticipantInfo> =
-            participants
-                .iter()
-                .map(|p| crate::infrastructure::dto::websocket::ParticipantInfo {
-                    client_id: p.id.as_str().to_string(),
-                    connected_at: p.connected_at.value(),
-                })
-                .collect();
+    /// 接続中の参加者リスト（Domain Model、ソート済み）
+    pub async fn build_participant_list(&self) -> Vec<Participant> {
+        let mut participants = self.repository.get_participants().await;
 
         // Sort by client_id for consistent ordering
-        participant_info_list.sort_by(|a, b| a.client_id.cmp(&b.client_id));
+        participants.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
 
-        participant_info_list
+        participants
+    }
+
+    /// 参加者が join したことを既存の参加者にブロードキャスト
+    ///
+    /// # Arguments
+    ///
+    /// * `new_client_id` - 新規接続したクライアントの ID（Domain Model）
+    /// * `message` - ブロードキャストするメッセージ（JSON）
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - ブロードキャスト成功
+    /// * `Err(String)` - ブロードキャスト失敗
+    pub async fn broadcast_participant_joined(
+        &self,
+        new_client_id: &ClientId,
+        message: &str,
+    ) -> Result<(), String> {
+        // 新規接続クライアント以外の全てのクライアントを取得
+        let all_client_ids = self.repository.get_all_connected_client_ids().await;
+        let target_ids: Vec<ClientId> = all_client_ids
+            .into_iter()
+            .filter(|id| id != new_client_id)
+            .collect();
+
+        // ブロードキャスト
+        self.message_pusher
+            .broadcast(target_ids, message)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -104,31 +137,36 @@ mod tests {
     use crate::{
         common::time::get_jst_timestamp,
         domain::{Room, RoomIdFactory, Timestamp},
-        infrastructure::repository::InMemoryRoomRepository,
+        infrastructure::{
+            message_pusher::WebSocketMessagePusher, repository::InMemoryRoomRepository,
+        },
     };
     use std::{collections::HashMap, sync::Arc};
-    use tokio::sync::{Mutex, mpsc};
+    use tokio::sync::Mutex;
 
     fn create_test_repository() -> Arc<InMemoryRoomRepository> {
-        let connected_clients = Arc::new(Mutex::new(HashMap::new()));
         let room = Arc::new(Mutex::new(Room::new(
             RoomIdFactory::generate().unwrap(),
             Timestamp::new(get_jst_timestamp()),
         )));
-        Arc::new(InMemoryRoomRepository::new(connected_clients, room))
+        Arc::new(InMemoryRoomRepository::new(room))
     }
 
     fn create_test_repository_with_capacity(
         participant_capacity: usize,
     ) -> Arc<InMemoryRoomRepository> {
-        let connected_clients = Arc::new(Mutex::new(HashMap::new()));
         let room = Arc::new(Mutex::new(Room::with_capacity(
             RoomIdFactory::generate().unwrap(),
             Timestamp::new(get_jst_timestamp()),
             participant_capacity,
             100,
         )));
-        Arc::new(InMemoryRoomRepository::new(connected_clients, room))
+        Arc::new(InMemoryRoomRepository::new(room))
+    }
+
+    fn create_test_message_pusher() -> Arc<WebSocketMessagePusher> {
+        let clients = Arc::new(Mutex::new(HashMap::new()));
+        Arc::new(WebSocketMessagePusher::new(clients))
     }
 
     #[tokio::test]
@@ -136,11 +174,12 @@ mod tests {
         // テスト項目: 新規参加者が正常に接続できる
         // given (前提条件):
         let repository = create_test_repository();
-        let usecase = ConnectParticipantUseCase::new(repository.clone());
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let message_pusher = create_test_message_pusher();
+        let usecase = ConnectParticipantUseCase::new(repository.clone(), message_pusher);
 
         // when (操作):
         let client_id = ClientId::new("alice".to_string()).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let result = usecase.execute(client_id.clone(), tx).await;
 
         // then (期待する結果):
@@ -158,16 +197,17 @@ mod tests {
         // テスト項目: 重複した client_id での接続試行がエラーになる
         // given (前提条件):
         let repository = create_test_repository();
-        let usecase = ConnectParticipantUseCase::new(repository.clone());
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, _rx2) = mpsc::unbounded_channel();
+        let message_pusher = create_test_message_pusher();
+        let usecase = ConnectParticipantUseCase::new(repository.clone(), message_pusher);
 
         // 最初の接続は成功
         let client_id1 = ClientId::new("alice".to_string()).unwrap();
+        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel();
         usecase.execute(client_id1.clone(), tx1).await.unwrap();
 
         // when (操作): 同じ client_id で再接続を試みる
         let client_id2 = ClientId::new("alice".to_string()).unwrap();
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
         let result = usecase.execute(client_id2, tx2).await;
 
         // then (期待する結果): 重複エラーが返される
@@ -186,19 +226,20 @@ mod tests {
         // given (前提条件):
         let capacity = 2; // Room の人数制限
         let repository = create_test_repository_with_capacity(capacity);
-        let usecase = ConnectParticipantUseCase::new(repository.clone());
+        let message_pusher = create_test_message_pusher();
+        let usecase = ConnectParticipantUseCase::new(repository.clone(), message_pusher);
 
         // 2人接続（容量いっぱい）
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, _rx2) = mpsc::unbounded_channel();
         let client_id_alice = ClientId::new("alice".to_string()).unwrap();
         let client_id_bob = ClientId::new("bob".to_string()).unwrap();
+        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel();
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
         usecase.execute(client_id_alice.clone(), tx1).await.unwrap();
         usecase.execute(client_id_bob.clone(), tx2).await.unwrap();
 
         // when (操作): 3人目の接続を試みる
-        let (tx3, _rx3) = mpsc::unbounded_channel();
         let charlie = ClientId::new("charlie".to_string()).unwrap();
+        let (tx3, _rx3) = tokio::sync::mpsc::unbounded_channel();
         let result = usecase.execute(charlie.clone(), tx3).await;
 
         // then (期待する結果): 容量超過エラーが返される
@@ -213,15 +254,16 @@ mod tests {
         // テスト項目: 参加者リストが正しく構築される
         // given (前提条件):
         let repository = create_test_repository();
-        let usecase = ConnectParticipantUseCase::new(repository.clone());
+        let message_pusher = create_test_message_pusher();
+        let usecase = ConnectParticipantUseCase::new(repository.clone(), message_pusher);
 
         // 3人接続（順序: charlie, alice, bob）
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, _rx2) = mpsc::unbounded_channel();
-        let (tx3, _rx3) = mpsc::unbounded_channel();
         let client_id_charlie = ClientId::new("charlie".to_string()).unwrap();
         let client_id_alice = ClientId::new("alice".to_string()).unwrap();
         let client_id_bob = ClientId::new("bob".to_string()).unwrap();
+        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel();
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
+        let (tx3, _rx3) = tokio::sync::mpsc::unbounded_channel();
         usecase
             .execute(client_id_charlie.clone(), tx1)
             .await
@@ -234,8 +276,8 @@ mod tests {
 
         // then (期待する結果): client_id でソートされている
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].client_id, client_id_alice.as_str());
-        assert_eq!(result[1].client_id, client_id_bob.as_str());
-        assert_eq!(result[2].client_id, client_id_charlie.as_str());
+        assert_eq!(result[0].id.as_str(), client_id_alice.as_str());
+        assert_eq!(result[1].id.as_str(), client_id_bob.as_str());
+        assert_eq!(result[2].id.as_str(), client_id_charlie.as_str());
     }
 }

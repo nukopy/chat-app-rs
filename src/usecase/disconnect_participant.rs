@@ -18,18 +18,26 @@
 
 use std::sync::Arc;
 
-use crate::domain::{ClientId, RoomRepository};
+use crate::domain::{ClientId, MessagePusher, RoomRepository};
 
 /// 参加者切断のユースケース
 pub struct DisconnectParticipantUseCase {
     /// Repository（データアクセス層の抽象化）
     repository: Arc<dyn RoomRepository>,
+    /// MessagePusher（メッセージ通知の抽象化）
+    message_pusher: Arc<dyn MessagePusher>,
 }
 
 impl DisconnectParticipantUseCase {
     /// 新しい DisconnectParticipantUseCase を作成
-    pub fn new(repository: Arc<dyn RoomRepository>) -> Self {
-        Self { repository }
+    pub fn new(
+        repository: Arc<dyn RoomRepository>,
+        message_pusher: Arc<dyn MessagePusher>,
+    ) -> Self {
+        Self {
+            repository,
+            message_pusher,
+        }
     }
 
     /// 参加者切断を実行
@@ -40,38 +48,66 @@ impl DisconnectParticipantUseCase {
     ///
     /// # Returns
     ///
-    /// * `Ok(Vec<String>)` - 通知対象のクライアント ID リスト
-    /// * `Err(())` - 切断失敗
-    pub async fn execute(&self, client_id: ClientId) -> Result<Vec<String>, ()> {
-        let client_id_str = client_id.as_str();
+    /// * `Ok(Vec<ClientId>)` - 通知対象のクライアント ID リスト（Domain Model）
+    /// * `Err(())` - 切断失敗（参加者が存在しない場合）
+    pub async fn execute(&self, client_id: ClientId) -> Result<Vec<ClientId>, ()> {
+        // 1. 参加者が存在するかチェック
+        let all_client_ids = self.repository.get_all_connected_client_ids().await;
+        if !all_client_ids.iter().any(|id| id == &client_id) {
+            return Err(());
+        }
 
-        // 1. 通知対象を取得（切断するクライアント以外の全てのクライアント）
-        let notify_targets = self.get_notify_targets(client_id_str).await;
+        // 2. 通知対象を取得（切断するクライアント以外の全てのクライアント）
+        let notify_targets = self.get_notify_targets(&client_id).await;
 
-        // 2. Repository 経由で参加者を削除
+        // 3. Repository 経由で参加者を削除
         self.repository
             .remove_participant(&client_id)
             .await
             .map_err(|_| ())?;
+
+        // 4. MessagePusher からクライアントを登録解除（Domain Model を渡す）
+        self.message_pusher.unregister_client(&client_id).await;
 
         Ok(notify_targets)
     }
 
     /// 通知対象のクライアント ID リストを取得
     ///
-    /// 切断するクライアント以外の全てのクライアント ID を返す
-    async fn get_notify_targets(&self, exclude_client_id: &str) -> Vec<String> {
+    /// 切断するクライアント以外の全てのクライアント ID を返す（Domain Model）
+    async fn get_notify_targets(&self, exclude_client_id: &ClientId) -> Vec<ClientId> {
         let all_client_ids = self.repository.get_all_connected_client_ids().await;
         all_client_ids
             .into_iter()
-            .filter(|id| id.as_str() != exclude_client_id)
-            .map(|id| id.into_string())
+            .filter(|id| id != exclude_client_id)
             .collect()
     }
 
     /// 残りの参加者数を取得
     pub async fn count_remaining_participants(&self) -> usize {
         self.repository.count_connected_clients().await
+    }
+
+    /// 参加者が left したことを残りの参加者にブロードキャスト
+    ///
+    /// # Arguments
+    ///
+    /// * `target_ids` - ブロードキャスト対象のクライアント ID リスト（Domain Model）
+    /// * `message` - ブロードキャストするメッセージ（JSON）
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - ブロードキャスト成功
+    /// * `Err(String)` - ブロードキャスト失敗
+    pub async fn broadcast_participant_left(
+        &self,
+        target_ids: Vec<ClientId>,
+        message: &str,
+    ) -> Result<(), String> {
+        self.message_pusher
+            .broadcast(target_ids, message)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -81,18 +117,24 @@ mod tests {
     use crate::{
         common::time::get_jst_timestamp,
         domain::{Room, RoomIdFactory, Timestamp},
-        infrastructure::repository::InMemoryRoomRepository,
+        infrastructure::{
+            message_pusher::WebSocketMessagePusher, repository::InMemoryRoomRepository,
+        },
     };
     use std::{collections::HashMap, sync::Arc};
-    use tokio::sync::{Mutex, mpsc};
+    use tokio::sync::Mutex;
 
     fn create_test_repository() -> Arc<InMemoryRoomRepository> {
-        let connected_clients = Arc::new(Mutex::new(HashMap::new()));
         let room = Arc::new(Mutex::new(Room::new(
             RoomIdFactory::generate().unwrap(),
             Timestamp::new(get_jst_timestamp()),
         )));
-        Arc::new(InMemoryRoomRepository::new(connected_clients, room))
+        Arc::new(InMemoryRoomRepository::new(room))
+    }
+
+    fn create_test_message_pusher() -> Arc<WebSocketMessagePusher> {
+        let clients = Arc::new(Mutex::new(HashMap::new()));
+        Arc::new(WebSocketMessagePusher::new(clients))
     }
 
     #[tokio::test]
@@ -100,27 +142,24 @@ mod tests {
         // テスト項目: 参加者が正常に切断でき、通知対象が返される
         // given (前提条件):
         let repository = create_test_repository();
-        let usecase = DisconnectParticipantUseCase::new(repository.clone());
+        let message_pusher = create_test_message_pusher();
+        let usecase = DisconnectParticipantUseCase::new(repository.clone(), message_pusher);
 
         // 3人のクライアントを接続
-
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, _rx2) = mpsc::unbounded_channel();
-        let (tx3, _rx3) = mpsc::unbounded_channel();
         let timestamp = get_jst_timestamp();
         let alice = ClientId::new("alice".to_string()).unwrap();
         let bob = ClientId::new("bob".to_string()).unwrap();
         let charlie = ClientId::new("charlie".to_string()).unwrap();
         repository
-            .add_participant(alice.clone(), tx1, Timestamp::new(timestamp))
+            .add_participant(alice.clone(), Timestamp::new(timestamp))
             .await
             .unwrap();
         repository
-            .add_participant(bob.clone(), tx2, Timestamp::new(timestamp))
+            .add_participant(bob.clone(), Timestamp::new(timestamp))
             .await
             .unwrap();
         repository
-            .add_participant(charlie.clone(), tx3, Timestamp::new(timestamp))
+            .add_participant(charlie.clone(), Timestamp::new(timestamp))
             .await
             .unwrap();
 
@@ -133,9 +172,11 @@ mod tests {
 
         // alice 以外の2人が通知対象
         assert_eq!(notify_targets.len(), 2);
-        assert!(notify_targets.contains(&"bob".to_string()));
-        assert!(notify_targets.contains(&"charlie".to_string()));
-        assert!(!notify_targets.contains(&"alice".to_string()));
+        let bob_id = ClientId::new("bob".to_string()).unwrap();
+        let charlie_id = ClientId::new("charlie".to_string()).unwrap();
+        assert!(notify_targets.contains(&bob_id));
+        assert!(notify_targets.contains(&charlie_id));
+        assert!(!notify_targets.contains(&alice));
 
         // Repository から削除されている
         assert_eq!(repository.count_connected_clients().await, 2);
@@ -146,14 +187,14 @@ mod tests {
         // テスト項目: 最後の参加者が切断した場合、通知対象は空
         // given (前提条件):
         let repository = create_test_repository();
-        let usecase = DisconnectParticipantUseCase::new(repository.clone());
+        let message_pusher = create_test_message_pusher();
+        let usecase = DisconnectParticipantUseCase::new(repository.clone(), message_pusher);
 
         // alice のみ接続
-        let (tx1, _rx1) = mpsc::unbounded_channel();
         let timestamp = get_jst_timestamp();
         let alice = ClientId::new("alice".to_string()).unwrap();
         repository
-            .add_participant(alice.clone(), tx1, Timestamp::new(timestamp))
+            .add_participant(alice.clone(), Timestamp::new(timestamp))
             .await
             .unwrap();
 
@@ -176,7 +217,8 @@ mod tests {
         // テスト項目: 存在しない参加者の切断試行がエラーになる
         // given (前提条件):
         let repository = create_test_repository();
-        let usecase = DisconnectParticipantUseCase::new(repository.clone());
+        let message_pusher = create_test_message_pusher();
+        let usecase = DisconnectParticipantUseCase::new(repository.clone(), message_pusher);
 
         // when (操作): 存在しない参加者を切断
         let nonexistent = ClientId::new("nonexistent".to_string()).unwrap();
@@ -191,26 +233,24 @@ mod tests {
         // テスト項目: 残りの参加者数を正しくカウントできる
         // given (前提条件):
         let repository = create_test_repository();
-        let usecase = DisconnectParticipantUseCase::new(repository.clone());
+        let message_pusher = create_test_message_pusher();
+        let usecase = DisconnectParticipantUseCase::new(repository.clone(), message_pusher);
 
         // 3人のクライアントを接続
-        let (tx1, _rx1) = mpsc::unbounded_channel();
-        let (tx2, _rx2) = mpsc::unbounded_channel();
-        let (tx3, _rx3) = mpsc::unbounded_channel();
         let timestamp = get_jst_timestamp();
         let alice = ClientId::new("alice".to_string()).unwrap();
         let bob = ClientId::new("bob".to_string()).unwrap();
         let charlie = ClientId::new("charlie".to_string()).unwrap();
         repository
-            .add_participant(alice.clone(), tx1, Timestamp::new(timestamp))
+            .add_participant(alice.clone(), Timestamp::new(timestamp))
             .await
             .unwrap();
         repository
-            .add_participant(bob.clone(), tx2, Timestamp::new(timestamp))
+            .add_participant(bob.clone(), Timestamp::new(timestamp))
             .await
             .unwrap();
         repository
-            .add_participant(charlie.clone(), tx3, Timestamp::new(timestamp))
+            .add_participant(charlie.clone(), Timestamp::new(timestamp))
             .await
             .unwrap();
 
