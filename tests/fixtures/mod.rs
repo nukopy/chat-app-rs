@@ -26,7 +26,7 @@ impl TestServer {
             .expect("Failed to start server");
 
         // Give server time to start
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(1000));
 
         TestServer { process, port }
     }
