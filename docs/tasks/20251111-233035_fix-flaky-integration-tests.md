@@ -221,7 +221,7 @@ pub async fn start(port: u16) -> Self {
 **問題**:
 最初は `reqwest::blocking::get()` を使って実装したが、`#[tokio::test]` の async コンテキスト内で実行すると以下のエラーが発生：
 
-```
+```sh
 Cannot drop a runtime in a context where blocking is not allowed.
 ```
 
