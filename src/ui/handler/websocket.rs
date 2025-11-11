@@ -15,13 +15,12 @@ use tokio::sync::mpsc;
 
 use crate::{
     common::time::get_jst_timestamp,
-    domain::{ClientId, MessageContent},
+    domain::{ClientId, MessageContent, Timestamp},
     infrastructure::dto::websocket::{
         ChatMessage, MessageType, ParticipantJoinedMessage, ParticipantLeftMessage,
         RoomConnectedMessage,
     },
     ui::state::AppState,
-    usecase::{ConnectParticipantUseCase, DisconnectParticipantUseCase, SendMessageUseCase},
 };
 
 use serde::Deserialize;
@@ -52,12 +51,25 @@ pub async fn websocket_handler(
     let (tx, rx) = mpsc::unbounded_channel();
 
     // Use ConnectParticipantUseCase to handle connection
-    let connect_usecase = ConnectParticipantUseCase::new(state.repository.clone());
-
-    match connect_usecase.execute(client_id, tx).await {
-        Ok(_) => {
+    // (register_client is called inside the UseCase)
+    let client_id_for_handle = client_id.clone();
+    match state
+        .connect_participant_usecase
+        .execute(client_id, tx)
+        .await
+    {
+        Ok(connected_at) => {
             tracing::info!("Client '{}' connected and registered", client_id_str);
-            Ok(ws.on_upgrade(|socket| handle_socket(socket, state, client_id_str, rx)))
+            Ok(ws.on_upgrade(move |socket| {
+                handle_socket(
+                    socket,
+                    state,
+                    client_id_str,
+                    rx,
+                    connected_at,
+                    client_id_for_handle,
+                )
+            }))
         }
         Err(crate::usecase::ConnectError::DuplicateClientId(_)) => {
             tracing::warn!(
@@ -76,62 +88,99 @@ pub async fn websocket_handler(
     }
 }
 
+/// Spawns a task that receives messages from the rx channel and pushes them to the WebSocket sender.
+///
+/// This function handles the outbound message flow: messages from other clients (via rx channel)
+/// are sent to this client's WebSocket connection.
+///
+/// # Arguments
+///
+/// * `rx` - Channel receiver for messages from other clients
+/// * `sender` - WebSocket sink to send messages to this client
+///
+/// # Returns
+///
+/// A `JoinHandle` for the spawned task
+fn pusher_loop(
+    mut rx: mpsc::UnboundedReceiver<String>,
+    mut sender: futures_util::stream::SplitSink<WebSocket, Message>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            // Send the message to this client
+            if sender.send(Message::Text(msg.into())).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
 async fn handle_socket(
     socket: WebSocket,
     state: Arc<AppState>,
-    client_id: String,
-    mut rx: mpsc::UnboundedReceiver<String>,
+    client_id_str: String,
+    rx: mpsc::UnboundedReceiver<String>,
+    connected_at: Timestamp,
+    client_id: ClientId,
 ) {
     let (mut sender, mut receiver) = socket.split();
 
     // Send current room participants to the newly connected client
-    let connected_at = {
+    {
         // Use ConnectParticipantUseCase to build participant list
-        let connect_usecase = ConnectParticipantUseCase::new(state.repository.clone());
-        let participants = connect_usecase.build_participant_list().await;
+        let participants = state
+            .connect_participant_usecase
+            .build_participant_list()
+            .await;
+
+        // Domain Model から DTO への変換
+        let participant_infos: Vec<crate::infrastructure::dto::websocket::ParticipantInfo> =
+            participants
+                .into_iter()
+                .map(|p| crate::infrastructure::dto::websocket::ParticipantInfo {
+                    client_id: p.id.as_str().to_string(),
+                    connected_at: p.connected_at.value(),
+                })
+                .collect();
 
         let room_msg = RoomConnectedMessage {
             r#type: MessageType::RoomConnected,
-            participants,
+            participants: participant_infos,
         };
 
         let room_json = serde_json::to_string(&room_msg).unwrap();
         if let Err(e) = sender.send(Message::Text(room_json.into())).await {
-            tracing::error!("Failed to send room connected to '{}': {}", client_id, e);
+            tracing::error!(
+                "Failed to send room connected to '{}': {}",
+                client_id_str,
+                e
+            );
             return;
         }
-        tracing::info!("Sent room connected list to '{}'", client_id);
-
-        // Get this client's connected_at timestamp for broadcasting
-        state
-            .repository
-            .get_client_connected_at(&client_id)
-            .await
-            .unwrap()
-    };
+        tracing::info!("Sent room connected list to '{}'", client_id_str);
+    }
 
     // Broadcast participant-joined to all other clients
     {
-        let senders = state.repository.get_all_client_senders().await;
         let joined_msg = ParticipantJoinedMessage {
             r#type: MessageType::ParticipantJoined,
-            client_id: client_id.clone(),
-            connected_at,
+            client_id: client_id_str.clone(),
+            connected_at: connected_at.value(),
         };
 
         let joined_json = serde_json::to_string(&joined_msg).unwrap();
-        for (id, sender) in senders.iter() {
-            if id != &client_id {
-                // Send to other clients only
-                if sender.send(joined_json.clone()).is_err() {
-                    tracing::warn!("Failed to send participant-joined to client '{}'", id);
-                }
-            }
+        if let Err(e) = state
+            .connect_participant_usecase
+            .broadcast_participant_joined(&client_id, &joined_json)
+            .await
+        {
+            tracing::warn!("Failed to broadcast participant-joined: {}", e);
+        } else {
+            tracing::info!("Broadcasted participant-joined for '{}'", client_id_str);
         }
-        tracing::info!("Broadcasted participant-joined for '{}'", client_id);
     }
 
-    let client_id_clone = client_id.clone();
+    let client_id_str_clone = client_id_str.clone();
     let state_clone = state.clone();
 
     // Spawn a task to receive messages from this client
@@ -180,29 +229,19 @@ async fn handle_socket(
                     );
 
                     // Use SendMessageUseCase to handle message sending
-                    let send_usecase = SendMessageUseCase::new(state_clone.repository.clone());
-
                     // Convert String -> Domain Models
                     let client_id_result = ClientId::try_from(response.client_id.clone());
                     let content_result = MessageContent::try_from(response.content.clone());
 
                     match (client_id_result, content_result) {
                         (Ok(client_id_vo), Ok(content_vo)) => {
-                            match send_usecase.execute(client_id_vo, content_vo).await {
-                                Ok(broadcast_targets) => {
-                                    // Send to broadcast targets
-                                    let senders =
-                                        state_clone.repository.get_all_client_senders().await;
-                                    for target_id in broadcast_targets {
-                                        if let Some(sender) = senders.get(&target_id)
-                                            && sender.send(response_json.clone()).is_err()
-                                        {
-                                            tracing::warn!(
-                                                "Failed to send message to client '{}'",
-                                                target_id
-                                            );
-                                        }
-                                    }
+                            match state_clone
+                                .send_message_usecase
+                                .execute(client_id_vo, content_vo, response_json)
+                                .await
+                            {
+                                Ok(_broadcast_targets) => {
+                                    // Broadcast is handled by UseCase
                                 }
                                 Err(e) => {
                                     tracing::warn!("Failed to send message: {:?}", e);
@@ -225,7 +264,7 @@ async fn handle_socket(
                     // Ping/pong is handled automatically by the WebSocket protocol
                 }
                 Message::Close(_) => {
-                    tracing::info!("Client '{}' requested close", client_id_clone);
+                    tracing::info!("Client '{}' requested close", client_id_str_clone);
                     break;
                 }
                 _ => {}
@@ -234,14 +273,7 @@ async fn handle_socket(
     });
 
     // Spawn a task to receive messages from other clients and send to this client
-    let mut send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            // Send the message to this client
-            if sender.send(Message::Text(msg.into())).await.is_err() {
-                break;
-            }
-        }
-    });
+    let mut send_task = pusher_loop(rx, sender);
 
     // If any one of the tasks completes, abort the other
     tokio::select! {
@@ -250,48 +282,39 @@ async fn handle_socket(
     };
 
     // Use DisconnectParticipantUseCase to handle disconnection
-    let disconnect_usecase = DisconnectParticipantUseCase::new(state.repository.clone());
-
-    // Convert String -> ClientId (Domain Model)
-    let client_id_vo = match ClientId::try_from(client_id.clone()) {
-        Ok(id) => id,
-        Err(_) => {
-            tracing::warn!(
-                "Invalid client_id format during disconnect: '{}'",
-                client_id
-            );
-            return;
-        }
-    };
-
-    match disconnect_usecase.execute(client_id_vo).await {
+    // (client_id is already a ClientId Domain Model)
+    match state
+        .disconnect_participant_usecase
+        .execute(client_id.clone())
+        .await
+    {
         Ok(notify_targets) => {
             tracing::info!(
                 "Client '{}' disconnected and removed from registry",
-                client_id
+                client_id_str
             );
 
             // Broadcast participant-left to all remaining clients
             let disconnected_at = get_jst_timestamp();
             let left_msg = ParticipantLeftMessage {
                 r#type: MessageType::ParticipantLeft,
-                client_id: client_id.clone(),
+                client_id: client_id_str.clone(),
                 disconnected_at,
             };
 
             let left_json = serde_json::to_string(&left_msg).unwrap();
-            let senders = state.repository.get_all_client_senders().await;
-            for target_id in notify_targets {
-                if let Some(sender) = senders.get(&target_id)
-                    && sender.send(left_json.clone()).is_err()
-                {
-                    tracing::warn!("Failed to send participant-left to client '{}'", target_id);
-                }
+            if let Err(e) = state
+                .disconnect_participant_usecase
+                .broadcast_participant_left(notify_targets, &left_json)
+                .await
+            {
+                tracing::warn!("Failed to broadcast participant-left: {}", e);
+            } else {
+                tracing::info!("Broadcasted participant-left for '{}'", client_id_str);
             }
-            tracing::info!("Broadcasted participant-left for '{}'", client_id);
         }
         Err(_) => {
-            tracing::warn!("Failed to disconnect participant '{}'", client_id);
+            tracing::warn!("Failed to disconnect participant '{}'", client_id_str);
         }
     }
 }
