@@ -65,6 +65,11 @@ graph TD
 - `bin/server`: WebSocket チャットサーバ。接続中のクライアント間でメッセージをブロードキャストします（送信者自身には送信されません）
 - `bin/client`: インタラクティブなチャットクライアント。ユニークな `client_id` で接続し、再接続機能を持ちます
 
+## Requirements
+
+- Rust 1.90.0
+- [Task](https://taskfile.dev/docs/installation) 3.45.5
+
 ## 開発
 
 ### format
