@@ -157,6 +157,49 @@ help
 cargo run -p client --bin client -- --help
 ```
 
+## リリース to crates.io
+
+参考：[The Cargo Book - Publishing Commands](https://doc.rust-lang.org/cargo/commands/publishing-commands.html)
+
+### crates.io へのログイン：`cargo login`
+
+ターミナルで `cargo login` 実行後、[https://crates.io/me](https://crates.io/me) へ飛び、トークンを生成する。その後、ターミナルにトークンを貼り付けて Enter を入力し、`Login token for crates-io saved` と表示されれば OK。
+
+```sh
+cargo login
+# please paste the token found on https://crates.io/me below
+#       Login token for `crates-io` saved
+```
+
+### crates.io へのリリース：`cargo publish`
+
+- `cargo publish`
+
+> [!IMPORTANT]
+>
+> 依存しているパッケージは後でリリースする必要がある。
+> 依存先が crates.io に登録されていない場合、`cargo publish` が失敗する。
+
+```sh
+cargo publish -p engawa-shared
+cargo publish -p engawa-server
+cargo publish -p engawa-client
+```
+
+- Git tagging
+  - `cargo publish` が失敗する場合があるので、`cargo publish` の後にリリース時点のコミットに tag を付与する。
+
+```sh
+# git tag & push
+git commit --allow-empty -m "Release v0.0.1 :tada:"
+git tag -a v0.0.1 -m "Release v0.0.1 :tada:"
+git push origin v0.0.1
+
+# untag
+git tag -d v0.0.1
+git push origin :v0.0.1
+```
+
 ## Note
 
 ### Task の使い方
