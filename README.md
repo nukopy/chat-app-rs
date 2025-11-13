@@ -67,17 +67,20 @@ graph TD
 
 ## 開発
 
-### ビルド
+### format
 
 ```sh
-# workspace 全体をビルド
-cargo build --workspace
-# cargo build でも OK
+cargo fmt
+```
 
-# 個別パッケージのビルド
-cargo build -p server
-cargo build -p client
-cargo build -p shared
+### lint
+
+```sh
+# Clippy（lint）
+cargo clippy --workspace --all-targets --all-features
+
+# フォーマット
+cargo fmt
 ```
 
 ### テスト
@@ -93,14 +96,17 @@ cargo test -p client
 cargo test -p shared
 ```
 
-### Lint・フォーマット
+### ビルド
 
 ```sh
-# Clippy（lint）
-cargo clippy --workspace --all-targets --all-features
+# workspace 全体をビルド
+cargo build --workspace
+# cargo build でも OK
 
-# フォーマット
-cargo fmt --workspace
+# 個別パッケージのビルド
+cargo build -p server
+cargo build -p client
+cargo build -p shared
 ```
 
 ## 実行
