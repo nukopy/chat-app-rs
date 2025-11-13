@@ -1,5 +1,5 @@
 [package]
-name = "server"
+name = "engawa-server"
 version.workspace = true
 edition.workspace = true
 
