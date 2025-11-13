@@ -181,6 +181,12 @@ cargo login
 > 依存先が crates.io に登録されていない場合、`cargo publish` が失敗する。
 
 ```sh
+cargo publish --dry-run
+
+# 依存関係を自動で解決して publish する
+cargo publish
+
+# 依存順序を守って publish する
 cargo publish -p engawa-shared
 cargo publish -p engawa-server
 cargo publish -p engawa-client
