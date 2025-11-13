@@ -1,4 +1,4 @@
-# チャットアプリ with Rust + Axum + WebSocket
+# Engawa 縁側
 
 [![GitHub Actions workflow badge - CI][github-actions-badge-ci]][github-actions-url-ci]
 
@@ -156,3 +156,60 @@ cargo run -p client --bin client -- --help
 - メッセージは送信者以外の全クライアントにブロードキャストされます
 - サーバは Ctrl+C でグレースフルシャットダウンします
 - クライアントは接続断時に自動再接続を試みます（5秒間隔、最大5回）
+
+## Note
+
+### Task の使い方
+
+- format / lint / check / test
+
+```sh
+task fmt
+task lint
+task check
+task test
+```
+
+- コミット前の全チェック
+
+```sh
+task ci
+```
+
+- サーバの起動
+
+```sh
+task run-server
+
+# host, port 指定
+task run-server HOST=127.0.0.1 PORT=8080
+```
+
+- クライアントの起動
+
+```sh
+task run-client
+
+# client-id, URL 指定
+task run-client CLIENT_ID=alice URL=ws://127.0.0.1:8080/ws
+
+# デバッグ用途
+task run-client-alice
+task run-client-bob
+```
+
+- タスク一覧
+
+```sh
+task
+```
+
+- タスクの詳細
+
+```sh
+task --summary <task-name>
+
+# 例
+task --summary run-server
+task --summary run-client
+```
